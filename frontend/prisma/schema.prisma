@@ -1,0 +1,543 @@
+// SEO Platform MVP - Database Schema
+// Based on agents.md specification
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USERS & ORGANIZATIONS
+// ============================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      UserRole @default(USER)
+  createdAt DateTime @default(now()) @map("created_at")
+  lastLogin DateTime? @map("last_login")
+
+  // Auth
+  password  String?  // For email/password auth
+  emailVerified DateTime? @map("email_verified")
+  image     String?
+
+  // Relations
+  accounts      Account[]
+  sessions      Session[]
+  ownedOrgs     Org[]      @relation("OrgOwner")
+  orgMemberships OrgUser[]
+  activityLogs  ActivityLog[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Org {
+  id          String   @id @default(cuid())
+  name        String
+  ownerUserId String   @map("owner_user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  owner           User             @relation("OrgOwner", fields: [ownerUserId], references: [id])
+  members         OrgUser[]
+  projects        Project[]
+  creditWallet    CreditWallet?
+  creditTxns      CreditTxn[]
+  activityLogs    ActivityLog[]
+  partnerOptins   PartnerOptin[]
+
+  @@map("orgs")
+}
+
+model OrgUser {
+  id         String      @id @default(cuid())
+  orgId      String      @map("org_id")
+  userId     String      @map("user_id")
+  role       OrgRole     @default(VIEWER)
+  invitedAt  DateTime    @default(now()) @map("invited_at")
+  acceptedAt DateTime?   @map("accepted_at")
+
+  org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@map("org_users")
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+// ============================================
+// PROJECTS
+// ============================================
+
+model Project {
+  id        String   @id @default(cuid())
+  orgId     String   @map("org_id")
+  name      String
+  niche     String?  // Industry/niche
+  locale    String   @default("en-US")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  // Relations
+  settings           ProjectSetting?
+  keywords           Keyword[]
+  topicClusters      TopicCluster[]
+  contentBriefs      ContentBrief[]
+  contentDrafts      ContentDraft[]
+  calendarItems      CalendarItem[]
+  linkProfiles       LinkProfile[]
+  exportBundles      ExportBundle[]
+
+  @@map("projects")
+}
+
+model ProjectSetting {
+  id                String  @id @default(cuid())
+  projectId         String  @unique @map("project_id")
+  siteName          String? @map("site_name")
+  targetDomain      String? @map("target_domain")
+  brandGuidelines   Json?   @map("brand_guidelines") // JSON object
+  tone              String? @default("NEUTRAL") // NEUTRAL, CONVERSATIONAL, TECHNICAL
+  targetAudience    String? @map("target_audience")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_settings")
+}
+
+// ============================================
+// CREDITS & BILLING
+// ============================================
+
+model CreditWallet {
+  id            String   @id @default(cuid())
+  orgId         String   @unique @map("org_id")
+  balance       Int      @default(0)
+  lifetimeSpent Int      @default(0) @map("lifetime_spent")
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("credit_wallets")
+}
+
+model CreditPackage {
+  id            String   @id @default(cuid())
+  name          String
+  creditsAmount Int      @map("credits_amount")
+  priceUsd      Decimal  @map("price_usd") @db.Decimal(10, 2)
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("credit_packages")
+}
+
+model CreditTxn {
+  id        String      @id @default(cuid())
+  orgId     String      @map("org_id")
+  delta     Int         // Positive for purchases, negative for usage
+  reason    TxnReason
+  refId     String?     @map("ref_id") // Reference to job ID or purchase ID
+  metadata  Json?       // Additional context
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([createdAt])
+  @@map("credit_txns")
+}
+
+enum TxnReason {
+  PURCHASE
+  REFUND
+  USAGE
+  ADMIN_GRANT
+  TRIAL_BONUS
+}
+
+model PricingMatrix {
+  id              String      @id @default(cuid())
+  action          ActionType
+  creditsPerUnit  Int         @map("credits_per_unit")
+  minCharge       Int         @default(0) @map("min_charge")
+  description     String?
+  isActive        Boolean     @default(true) @map("is_active")
+
+  @@unique([action])
+  @@map("pricing_matrix")
+}
+
+enum ActionType {
+  KEYWORD_FETCH
+  CLUSTER
+  OUTLINE
+  DRAFT
+  SEO_SCORE
+  LINK_UPDATE
+  EXPORT
+}
+
+// ============================================
+// CONTENT INTELLIGENCE
+// ============================================
+
+model Keyword {
+  id            String       @id @default(cuid())
+  projectId     String       @map("project_id")
+  term          String
+  source        KeywordSource @default(SEED)
+  searchVolume  Int?         @map("search_volume")
+  difficulty    Int?         @map("difficulty") // 0-100
+  serpSnapshot  Json?        @map("serp_snapshot") // Top results data
+  locale        String       @default("en-US")
+  tags          String[]     @default([])
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Relations
+  clusters      TopicCluster[] @relation("ClusterKeywords")
+  targetBriefs  ContentBrief[] @relation("TargetKeyword")
+
+  @@index([projectId])
+  @@index([term])
+  @@map("keywords")
+}
+
+enum KeywordSource {
+  SEED
+  IMPORT
+  SUGGEST
+  SERP
+}
+
+model TopicCluster {
+  id            String         @id @default(cuid())
+  projectId     String         @map("project_id")
+  label         String
+  centroidTerms String[]       @map("centroid_terms")
+  strategy      FunnelStrategy @default(AWARENESS)
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  keywords Keyword[] @relation("ClusterKeywords")
+  briefs   ContentBrief[]
+
+  @@index([projectId])
+  @@map("topic_clusters")
+}
+
+enum FunnelStrategy {
+  AWARENESS
+  CONSIDERATION
+  DECISION
+}
+
+model ContentBrief {
+  id                    String   @id @default(cuid())
+  projectId             String   @map("project_id")
+  clusterId             String?  @map("cluster_id")
+  targetKeywordId       String?  @map("target_keyword_id")
+  headings              Json     // Array of H2/H3 structure
+  entities              Json     // Entities to cover
+  faq                   Json     // FAQ items
+  internalLinks         Json     // Internal link suggestions
+  externalRefs          Json     // External reference sources
+  recommendedWordCount  Int?     @map("recommended_word_count")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  cluster       TopicCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+  targetKeyword Keyword?      @relation("TargetKeyword", fields: [targetKeywordId], references: [id], onDelete: SetNull)
+
+  // Relations
+  drafts ContentDraft[]
+
+  @@index([projectId])
+  @@map("content_briefs")
+}
+
+model ContentDraft {
+  id                String       @id @default(cuid())
+  projectId         String       @map("project_id")
+  briefId           String?      @map("brief_id")
+  version           Int          @default(1)
+  title             String?
+  mdBody            String?      @map("md_body") @db.Text
+  htmlBody          String?      @map("html_body") @db.Text
+  wordCount         Int          @default(0) @map("word_count")
+  status            DraftStatus  @default(DRAFT)
+  seoScore          Int?         @map("seo_score") // 0-100
+  onpageChecklist   Json?        @map("onpage_checklist")
+  scheduledFor      DateTime?    @map("scheduled_for")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  brief   ContentBrief? @relation(fields: [briefId], references: [id], onDelete: SetNull)
+
+  // Relations
+  calendarItems           CalendarItem[]
+  internalLinkSuggestions InternalLinkSuggestion[] @relation("FromDraft")
+  receivedLinkSuggestions InternalLinkSuggestion[] @relation("ToDraft")
+  exports                 ExportBundle[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([scheduledFor])
+  @@map("content_drafts")
+}
+
+enum DraftStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  EXPORTED
+  PUBLISHED
+}
+
+// ============================================
+// BACKLINK NETWORK (Internal)
+// ============================================
+
+model LinkProfile {
+  id                 String   @id @default(cuid())
+  projectId          String   @map("project_id")
+  domain             String
+  topicalCategories  String[] @map("topical_categories")
+  drEstimate         Int?     @map("dr_estimate") // Domain rating 0-100
+  trustFlags         Json?    @map("trust_flags")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("link_profiles")
+}
+
+model LinkGraphSnapshot {
+  id            String   @id @default(cuid())
+  projectId     String   @map("project_id")
+  draftId       String   @map("draft_id")
+  incomingCount Int      @default(0) @map("incoming_count")
+  outgoingCount Int      @default(0) @map("outgoing_count")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  draft   ContentDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([draftId])
+  @@map("link_graph_snapshots")
+}
+
+model InternalLinkSuggestion {
+  id             String   @id @default(cuid())
+  fromDraftId    String   @map("from_draft_id")
+  toDraftId      String   @map("to_draft_id")
+  anchorText     String   @map("anchor_text")
+  relevanceScore Float    @map("relevance_score") // 0-1
+  accepted       Boolean  @default(false)
+  dismissed      Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  fromDraft ContentDraft @relation("FromDraft", fields: [fromDraftId], references: [id], onDelete: Cascade)
+  toDraft   ContentDraft @relation("ToDraft", fields: [toDraftId], references: [id], onDelete: Cascade)
+
+  @@index([fromDraftId])
+  @@index([toDraftId])
+  @@map("internal_link_suggestions")
+}
+
+model PartnerOptin {
+  id             String   @id @default(cuid())
+  orgId          String   @map("org_id")
+  domainsAllowed String[] @map("domains_allowed")
+  rules          Json     // Configuration for partner linking
+  active         Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("partner_optins")
+}
+
+// ============================================
+// SCHEDULING & CALENDAR
+// ============================================
+
+model CalendarItem {
+  id         String           @id @default(cuid())
+  projectId  String           @map("project_id")
+  type       CalendarItemType
+  refId      String?          @map("ref_id") // Reference to draft or note
+  title      String
+  startAt    DateTime         @map("start_at")
+  endAt      DateTime?        @map("end_at")
+  status     String           @default("pending")
+  assignedTo String?          @map("assigned_to") // User ID
+  metadata   Json?
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  draft   ContentDraft? @relation(fields: [refId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([startAt])
+  @@map("calendar_items")
+}
+
+enum CalendarItemType {
+  ARTICLE
+  SOCIAL_SNIPPET
+  TASK
+  NOTE
+}
+
+// ============================================
+// BACKGROUND JOBS
+// ============================================
+
+model Job {
+  id          String    @id @default(cuid())
+  type        String
+  payload     Json
+  status      JobStatus @default(QUEUED)
+  costCredits Int?      @map("cost_credits")
+  error       String?   @db.Text
+  result      Json?
+  startedAt   DateTime? @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+  @@map("jobs")
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+// ============================================
+// EXPORTS
+// ============================================
+
+model ExportBundle {
+  id        String       @id @default(cuid())
+  projectId String       @map("project_id")
+  draftId   String       @map("draft_id")
+  format    ExportFormat
+  url       String       // S3 URL
+  checksum  String?
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  draft   ContentDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([draftId])
+  @@map("export_bundles")
+}
+
+enum ExportFormat {
+  MD
+  HTML
+  DOCX
+}
+
+// ============================================
+// AUDIT & ADMIN
+// ============================================
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  actorId   String   @map("actor_id")
+  orgId     String?  @map("org_id")
+  action    String
+  target    String   // e.g., "draft:abc123"
+  meta      Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  org   Org?  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([actorId])
+  @@index([orgId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+model AdminFlag {
+  id        String   @id @default(cuid())
+  type      String
+  subjectId String   @map("subject_id") // User/Org/Draft ID
+  notes     String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([subjectId])
+  @@map("admin_flags")
+}
